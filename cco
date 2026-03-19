@@ -1588,8 +1588,10 @@ run_native_sandbox() {
 	# Load .env file first (matching Docker backend behavior)
 	if [[ -f ".env" ]]; then
 		while IFS= read -r line || [[ -n "$line" ]]; do
-			# Skip empty lines and comments
-			[[ -z "$line" || "$line" == \#* ]] && continue
+			# Match Docker-style comment handling by ignoring leading whitespace.
+			local trimmed_line="${line#"${line%%[![:space:]]*}"}"
+			[[ -z "$trimmed_line" || "$trimmed_line" == \#* ]] && continue
+			[[ "$trimmed_line" != *"="* ]] && continue
 			local env_key="${line%%=*}"
 			local env_val="${line#*=}"
 			export "${env_key}=${env_val}"

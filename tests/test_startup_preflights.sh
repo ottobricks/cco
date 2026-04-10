@@ -12,6 +12,7 @@ CCO_BIN="$PWD/cco"
 
 PASSED=0
 FAILED=0
+SKIPPED=0
 
 pass() {
 	echo "PASS: $1"
@@ -21,6 +22,11 @@ pass() {
 fail() {
 	echo "FAIL: $1"
 	FAILED=$((FAILED + 1))
+}
+
+skip() {
+	echo "SKIP: $1"
+	SKIPPED=$((SKIPPED + 1))
 }
 
 assert_contains() {
@@ -35,6 +41,10 @@ assert_contains() {
 		printf '%s\n' "$haystack" | sed 's/^/    /'
 		fail "$name"
 	fi
+}
+
+supports_docker() {
+	command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
 }
 
 echo "=== Startup Preflight Regression Tests ==="
@@ -63,6 +73,7 @@ chmod +x "$FAKE_BIN/security"
 echo "Test: --help documents --yes"
 if output=$("$CCO_BIN" --help 2>&1); then
 	assert_contains "$output" "--yes, -y             Auto-accept startup recovery prompts" "--help shows --yes flag"
+	assert_contains "$output" "CLAUDE_CODE_OAUTH_TOKEN" "--help documents external Claude token"
 else
 	echo "  output:"
 	printf '%s\n' "$output" | sed 's/^/    /'
@@ -133,6 +144,25 @@ else
 fi
 
 echo ""
+echo "Test: OAuth preflight skips refresh when CLAUDE_CODE_OAUTH_TOKEN is set"
+if (
+	PATH="$FAKE_BIN:$PATH"
+	source "$FUNCTIONS_ONLY"
+	export CLAUDE_CODE_OAUTH_TOKEN="test-token"
+	payload_reads=0
+	get_claude_credentials_payload() {
+		payload_reads=$((payload_reads + 1))
+		return 0
+	}
+	ensure_refreshable_oauth_credentials
+	[[ "$payload_reads" -eq 0 ]]
+); then
+	pass "OAuth preflight skips refresh when external token is provided"
+else
+	fail "OAuth preflight skips refresh when external token is provided"
+fi
+
+echo ""
 echo "Test: OAuth expiry extraction prefers claudeAiOauth over mcpOAuth entries"
 if (
 	PATH="$FAKE_BIN:$PATH"
@@ -181,6 +211,30 @@ if (
 	pass "macOS SSH keychain recovery auto-unlocks with --yes"
 else
 	fail "macOS SSH keychain recovery auto-unlocks with --yes"
+fi
+
+echo ""
+echo "Test: auth file checks are skipped when CLAUDE_CODE_OAUTH_TOKEN is set"
+if (
+	PATH="$FAKE_BIN:$PATH"
+	source "$FUNCTIONS_ONLY"
+	export CLAUDE_CODE_OAUTH_TOKEN="test-token"
+	export HOME="$TEST_ROOT/external-token-home"
+	unset CLAUDE_CONFIG_DIR
+	keychain_attempts=0
+	find_claude_config_dir() {
+		printf '%s\n' "$TEST_ROOT/missing-claude-config"
+	}
+	capture_macos_keychain_credentials() {
+		keychain_attempts=$((keychain_attempts + 1))
+		return 1
+	}
+	verify_claude_authentication
+	[[ "$keychain_attempts" -eq 0 ]]
+); then
+	pass "auth file checks are skipped when external token is provided"
+else
+	fail "auth file checks are skipped when external token is provided"
 fi
 
 echo ""
@@ -266,9 +320,31 @@ else
 fi
 
 echo ""
+echo "Test: docker backend receives CLAUDE_CODE_OAUTH_TOKEN from host environment"
+if ! supports_docker; then
+	skip "docker backend unavailable for external-token passthrough"
+elif output=$(
+	HOME="$TEST_ROOT/docker-home" CLAUDE_CODE_OAUTH_TOKEN="test-token" \
+		"$CCO_BIN" --backend docker shell 'printf %s "$CLAUDE_CODE_OAUTH_TOKEN"' 2>&1
+); then
+	if [[ "$(printf '%s\n' "$output" | tail -n 1)" == "test-token" ]]; then
+		pass "docker backend receives external Claude token"
+	else
+		echo "  output:"
+		printf '%s\n' "$output" | sed 's/^/    /'
+		fail "docker backend receives external Claude token"
+	fi
+else
+	echo "  output:"
+	printf '%s\n' "$output" | sed 's/^/    /'
+	fail "docker backend receives external Claude token"
+fi
+
+echo ""
 echo "=== Results ==="
 echo "Passed:  $PASSED"
 echo "Failed:  $FAILED"
+echo "Skipped: $SKIPPED"
 
 if [[ $FAILED -gt 0 ]]; then
 	exit 1

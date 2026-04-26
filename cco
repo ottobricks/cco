@@ -145,15 +145,34 @@ persist_scope_slug_for_root() {
 	fi
 }
 
+probe_linux_bwrap() {
+	bwrap --ro-bind / / true
+}
+
+explain_linux_bwrap_failure() {
+	local probe_output="$1"
+	warn "Native Linux sandbox is unavailable: bubblewrap is installed but cannot start."
+	if [[ "$probe_output" == *"setting up uid map"* && "$probe_output" == *"Permission denied"* ]]; then
+		warn "bubblewrap could not set up its uid_map; AppArmor/user-namespace policy is preventing setup."
+	elif [[ -n "$probe_output" ]]; then
+		local first_line="${probe_output%%$'\n'*}"
+		warn "bubblewrap probe failed: $first_line"
+	fi
+}
+
 # Detect available sandbox backends
 detect_sandbox_backend() {
 	local force_backend="$1"
+	local forced_native=false
 
 	if [[ -n "$force_backend" ]]; then
 		case "$force_backend" in
-		native | docker)
-			SANDBOX_BACKEND="$force_backend"
+		docker)
+			SANDBOX_BACKEND="docker"
 			return
+			;;
+		native)
+			forced_native=true
 			;;
 		auto | "")
 			# Continue with auto-detection
@@ -175,6 +194,9 @@ detect_sandbox_backend() {
 		if command -v sandbox-exec &>/dev/null; then
 			SANDBOX_BACKEND="native"
 			log "Using native sandbox (Seatbelt)"
+		elif [[ "$forced_native" == true ]]; then
+			error "Native sandbox was requested with --backend native, but sandbox-exec is not available."
+			exit 1
 		elif command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
 			SANDBOX_BACKEND="docker"
 			log "Using Docker sandbox (Seatbelt not available)"
@@ -185,12 +207,35 @@ detect_sandbox_backend() {
 	elif [[ "$os" == "Linux" ]]; then
 		# Linux: Check for bubblewrap
 		if command -v bwrap &>/dev/null; then
-			SANDBOX_BACKEND="native"
-			log "Using native sandbox (bubblewrap)"
+			local bwrap_probe_output
+			if bwrap_probe_output=$(probe_linux_bwrap 2>&1); then
+				SANDBOX_BACKEND="native"
+				log "Using native sandbox (bubblewrap)"
+			else
+				explain_linux_bwrap_failure "$bwrap_probe_output"
+				if [[ "$forced_native" == true ]]; then
+					error "Native sandbox was requested with --backend native, so cco cannot fall back automatically."
+					exit 1
+				elif command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+					SANDBOX_BACKEND="docker"
+					log "Using Docker sandbox (bubblewrap blocked by host policy)"
+				else
+					error "No sandbox backend available. Install Docker or fix the host bubblewrap/AppArmor policy."
+					exit 1
+				fi
+			fi
 		elif command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+			if [[ "$forced_native" == true ]]; then
+				error "Native sandbox was requested with --backend native, but bubblewrap is not installed."
+				exit 1
+			fi
 			SANDBOX_BACKEND="docker"
 			log "Using Docker sandbox (bubblewrap not available)"
 		else
+			if [[ "$forced_native" == true ]]; then
+				error "Native sandbox was requested with --backend native, but bubblewrap is not installed."
+				exit 1
+			fi
 			error "No sandbox backend available. Install bubblewrap or Docker."
 			exit 1
 		fi

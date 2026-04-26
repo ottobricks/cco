@@ -147,104 +147,149 @@ else
 fi
 
 echo ""
-echo "Test: OAuth preflight refreshes automatically inside preemptive window"
+echo "Test: OAuth preflight repairs expired credentials before startup"
 if (
 	PATH="$FAKE_BIN:$PATH"
 	source "$FUNCTIONS_ONLY"
 	yes_flag=false
 	allow_keychain=false
 	SANDBOX_BACKEND="native"
-	payload_file="$TEST_ROOT/oauth_preemptive_payload.json"
-	expires_at=$((($(date +%s) + (11 * 60 * 60)) * 1000))
-	printf '{"expiresAt":%s}\n' "$expires_at" >"$payload_file"
+	payload_file="$TEST_ROOT/oauth_expired_payload.json"
+	expired_at=$((($(date +%s) - 60) * 1000))
+	fresh_at=4102444800000
+	refresh_attempts=0
+	printf '{"expiresAt":%s}\n' "$expired_at" >"$payload_file"
 	get_claude_credentials_payload() {
 		cat "$payload_file"
 	}
 	run_unsandboxed_claude_refresh() {
-		printf '{"expiresAt":4102444800000}\n' >"$payload_file"
+		refresh_attempts=$((refresh_attempts + 1))
+		printf '{"expiresAt":%s}\n' "$fresh_at" >"$payload_file"
 		return 0
 	}
 	ensure_refreshable_oauth_credentials
+	[[ "$refresh_attempts" -eq 1 ]]
 	[[ "$(cat "$payload_file")" == '{"expiresAt":4102444800000}' ]]
 ); then
-	pass "OAuth preflight refreshes automatically inside preemptive window"
+	pass "OAuth preflight repairs expired credentials before startup"
 else
-	fail "OAuth preflight refreshes automatically inside preemptive window"
+	fail "OAuth preflight repairs expired credentials before startup"
 fi
 
 echo ""
-echo "Test: OAuth preflight accepts still-valid credentials after no-op refresh"
-if (
-	PATH="$FAKE_BIN:$PATH"
-	source "$FUNCTIONS_ONLY"
-	yes_flag=false
-	allow_keychain=false
-	SANDBOX_BACKEND="native"
-	refresh_attempts=0
-	expires_at=$((($(date +%s) + (11 * 60 * 60)) * 1000))
-	get_claude_credentials_payload() {
-		printf '{"expiresAt":%s}\n' "$expires_at"
-	}
-	run_unsandboxed_claude_refresh() {
-		refresh_attempts=$((refresh_attempts + 1))
-		return 0
-	}
-	ensure_refreshable_oauth_credentials
-	[[ "$refresh_attempts" -eq 1 ]]
+echo "Test: OAuth preflight fails closed when expired refresh fails"
+if output=$(
+	PATH="$FAKE_BIN:$PATH" TEST_ROOT="$TEST_ROOT" FUNCTIONS_ONLY="$FUNCTIONS_ONLY" bash <<'EOF' 2>&1
+set -euo pipefail
+source "$FUNCTIONS_ONLY"
+yes_flag=false
+allow_keychain=false
+SANDBOX_BACKEND="native"
+expired_at=$((($(date +%s) - 60) * 1000))
+get_claude_credentials_payload() {
+	printf '{"expiresAt":%s}\n' "$expired_at"
+}
+get_claude_command() {
+	printf 'claude\n'
+}
+run_unsandboxed_claude_refresh() {
+	return 1
+}
+ensure_refreshable_oauth_credentials
+EOF
 ); then
-	pass "OAuth preflight accepts still-valid credentials after no-op refresh"
+	fail "OAuth preflight exits when expired refresh fails"
 else
-	fail "OAuth preflight accepts still-valid credentials after no-op refresh"
+	assert_contains "$output" "Claude OAuth refresh did not complete" "expired refresh failure explains failure"
+	assert_contains "$output" "Run plain \`claude\` to re-authenticate, then retry cco." "expired refresh failure prints reauth guidance"
 fi
 
 echo ""
-echo "Test: OAuth preflight continues after failed preemptive refresh with valid token"
+echo "Test: OAuth preflight fails closed when expired refresh remains expired"
+if output=$(
+	PATH="$FAKE_BIN:$PATH" TEST_ROOT="$TEST_ROOT" FUNCTIONS_ONLY="$FUNCTIONS_ONLY" bash <<'EOF' 2>&1
+set -euo pipefail
+source "$FUNCTIONS_ONLY"
+yes_flag=false
+allow_keychain=false
+SANDBOX_BACKEND="native"
+expired_at=$((($(date +%s) - 60) * 1000))
+get_claude_credentials_payload() {
+	printf '{"expiresAt":%s}\n' "$expired_at"
+}
+get_claude_command() {
+	printf 'claude\n'
+}
+run_unsandboxed_claude_refresh() {
+	return 0
+}
+ensure_refreshable_oauth_credentials
+EOF
+); then
+	fail "OAuth preflight exits when refreshed credentials remain expired"
+else
+	assert_contains "$output" "Claude OAuth credentials are still expired after the refresh attempt" "still-expired refresh explains failure"
+	assert_contains "$output" "Run plain \`claude\` to re-authenticate, then retry cco." "still-expired refresh prints reauth guidance"
+fi
+
+echo ""
+echo "Test: OAuth preflight backgrounds refresh for valid near-expiry credentials"
 if (
 	PATH="$FAKE_BIN:$PATH"
 	source "$FUNCTIONS_ONLY"
 	yes_flag=false
 	allow_keychain=false
 	SANDBOX_BACKEND="native"
-	refresh_attempts=0
-	expires_at=$((($(date +%s) + (11 * 60 * 60)) * 1000))
+	background_attempts=0
+	foreground_attempts=0
+	expires_at=$((($(date +%s) + (90 * 60)) * 1000))
 	get_claude_credentials_payload() {
 		printf '{"expiresAt":%s}\n' "$expires_at"
 	}
 	run_unsandboxed_claude_refresh() {
-		refresh_attempts=$((refresh_attempts + 1))
+		foreground_attempts=$((foreground_attempts + 1))
 		return 1
 	}
+	start_background_claude_refresh() {
+		background_attempts=$((background_attempts + 1))
+	}
 	ensure_refreshable_oauth_credentials
-	[[ "$refresh_attempts" -eq 1 ]]
+	[[ "$background_attempts" -eq 1 ]]
+	[[ "$foreground_attempts" -eq 0 ]]
 ); then
-	pass "OAuth preflight continues after failed preemptive refresh with valid token"
+	pass "OAuth preflight backgrounds refresh for valid near-expiry credentials"
 else
-	fail "OAuth preflight continues after failed preemptive refresh with valid token"
+	fail "OAuth preflight backgrounds refresh for valid near-expiry credentials"
 fi
 
 echo ""
-echo "Test: OAuth preflight skips refresh outside preemptive window"
+echo "Test: OAuth preflight skips refresh outside background window"
 if (
 	PATH="$FAKE_BIN:$PATH"
 	source "$FUNCTIONS_ONLY"
 	yes_flag=false
 	allow_keychain=false
 	SANDBOX_BACKEND="native"
-	refresh_attempts=0
-	expires_at=$((($(date +%s) + (13 * 60 * 60)) * 1000))
+	background_attempts=0
+	foreground_attempts=0
+	expires_at=$((($(date +%s) + (3 * 60 * 60)) * 1000))
 	get_claude_credentials_payload() {
 		printf '{"expiresAt":%s}\n' "$expires_at"
 	}
 	run_unsandboxed_claude_refresh() {
-		refresh_attempts=$((refresh_attempts + 1))
+		foreground_attempts=$((foreground_attempts + 1))
 		return 0
 	}
+	start_background_claude_refresh() {
+		background_attempts=$((background_attempts + 1))
+	}
 	ensure_refreshable_oauth_credentials
-	[[ "$refresh_attempts" -eq 0 ]]
+	[[ "$background_attempts" -eq 0 ]]
+	[[ "$foreground_attempts" -eq 0 ]]
 ); then
-	pass "OAuth preflight skips refresh outside preemptive window"
+	pass "OAuth preflight skips refresh outside background window"
 else
-	fail "OAuth preflight skips refresh outside preemptive window"
+	fail "OAuth preflight skips refresh outside background window"
 fi
 
 echo ""

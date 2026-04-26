@@ -33,7 +33,7 @@ Claude Code runs directly on the host system with full user privileges:
 `cco` addresses these vulnerabilities through strict containerization:
 
 ### Enforced Sandbox
-- **Scoped filesystem access**: Claude can read/write the current project directory plus Claude-specific config paths (`~/.claude`, detected config dir, `.claude.json`). In Docker mode no other host paths exist unless you mount them. In native mode both Seatbelt (macOS) and bubblewrap (Linux) expose the entire host filesystem as read-only by default; use `--safe` to hide your `$HOME` directory for better isolation.
+- **Scoped filesystem access**: Claude can read/write the current project directory plus Claude-specific config paths (`~/.claude`, detected config dir, `.claude.json`) and the transient Claude lock/temp paths needed by the CLI. Trusted git worktree metadata is also writable when auto-detected. In Docker mode no other host paths exist unless you mount them. In native mode both Seatbelt (macOS) and bubblewrap (Linux) expose the entire host filesystem as read-only by default; use `--safe` to hide your `$HOME` directory for better isolation.
 - **Directory changes are sandboxed**: `cd /` succeeds, but in Docker mode this is the container's root filesystem (not your host), and in native mode both Seatbelt and bubblewrap deny writes outside the whitelisted paths while still allowing reads of the entire host filesystem.
 - **Process isolation**: Claude's processes are contained within either the container namespace or the native sandbox profile, preventing host-level process injection.
 - **Enhanced safe mode** (experimental): `cco --safe` (native sandbox only) provides stronger filesystem isolation by hiding your `$HOME` directory entirely, leaving only the project directory and explicitly whitelisted paths visible for reads. This significantly reduces exposure compared to the default native sandbox behavior. **Trade-off**: Some tools may fail if they require access to configuration files in `$HOME` - use `--allow-readonly` to selectively expose needed paths.
@@ -52,7 +52,7 @@ Claude Code runs directly on the host system with full user privileges:
 ### Credential Protection
 - **Runtime extraction**: Each session fetches fresh Claude credentials (macOS Keychain or Linux config file) into a temporary location.
 - **Read/write reality**: Claude's config directories (`~/.claude`, detected config dir, `.claude.json`) are mounted read-write so it can persist preferences and session state.
-- **Credential file access**: The credentials JSON is mounted read-only by default, so Claude cannot update tokens unless `--allow-oauth-refresh` is explicitly enabled.
+- **Credential file access**: Docker uses a temporary credentials mount that is read-only by default and becomes read/write only with `--allow-oauth-refresh`. Native backends expose Claude's normal config paths for CLI compatibility, but `cco` treats backends that cannot safely persist an in-sandbox refresh as non-persisting and refreshes near-expiry OAuth credentials before startup instead.
 - **No image persistence**: Credentials are never baked into the Docker image; temporary files are cleaned up after the session.
 - **Startup credential maintenance**: Before sandbox startup, `cco` may run a one-shot plain `claude -p ...` call on the host when stored OAuth credentials expire soon and the chosen sandbox cannot safely sync an in-sandbox refresh back. It may also offer `security unlock-keychain ...` for locked macOS login keychains over SSH.
 - **Consent boundary**: Keychain unlock recovery still runs only after an interactive confirmation, or automatically when `--yes` / `-y` is supplied. The OAuth maintenance refresh is a fixed `cco`-controlled host action before sandbox startup; it does not grant Claude ongoing general Keychain access or widen the sandbox after startup.
@@ -142,11 +142,13 @@ Claude Code runs directly on the host system with full user privileges:
 | `~/.claude` | Read/write | Session state, MCP configs, logs |
 | Detected config directory (`$XDG_CONFIG_HOME/claude` or `~/.claude`) | Read/write | Needed for new Claude CLI defaults |
 | `~/.claude.json` | Read/write | CLI top-level state file |
+| Claude lock/temp paths | Limited write | macOS Seatbelt allows narrow `~/.claude.lock`, `~/.claude.json.lock`, and `~/.claude.json.tmp.*` writes; Linux native does not broadly open `$HOME` for arbitrary sibling creation |
+| Trusted git worktree common dir | Read/write | Auto-added when current directory or immediate child git checkout uses the standard `.git/worktrees/...` layout |
 | `~/.ssh` | Read-only | Exposed so git can use host keys; consider using ssh-agent instead |
 | `~/.gitconfig` | Read-only | Git identity and settings |
 | Temporary credential file | Read-only | Mounted at runtime; becomes read/write only with `--allow-oauth-refresh` |
 | macOS Keychain | No access | Becomes read/write with `--allow-keychain` (CRITICAL security risk) |
-| Other host paths | No access | Unless explicitly mounted via flags |
+| Other host paths | Read-only in native default; no access in Docker | Native `--safe` hides `$HOME` except explicitly shared paths |
 
 **Safe Mode (`--safe`, native only, experimental)**
 - **Provides stronger filesystem isolation**: Hides your entire `$HOME` directory from Claude, significantly reducing exposure of personal files, dotfiles, secrets, and caches.
@@ -161,7 +163,7 @@ Claude Code runs directly on the host system with full user privileges:
 - Use `--deny-path PATH` to hide a path entirely (appears empty/blocked inside the sandbox). In Docker/bubblewrap this is implemented with empty overlays; in Seatbelt it raises access errors.
 - `--add-dir PATH[:ro|:rw]` lets you control permissions inline when mounting additional content.
 - Claude Code's local `.claude/settings.local.json` can also contribute read/write mounts through its `additionalDirectories` array. `cco` treats those entries like local `--add-dir PATH:rw` rules and warns if the file exists but cannot be parsed.
-- Git worktree support auto-detects `git rev-parse --git-common-dir` only for trusted git layouts. Use `--disable-git-worktree-common-dir` if you want fully manual control and no auto-added git paths.
+- Git worktree support auto-detects `git rev-parse --git-common-dir` from the current directory and immediate child git checkouts, but only auto-allows trusted git layouts. Use `--disable-git-worktree-common-dir` if you want fully manual control and no auto-added git paths.
 
 ## Terminal Injection Attacks (Linux)
 

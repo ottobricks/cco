@@ -62,7 +62,7 @@ You should barely notice `cco` is there, except for that reassuring feeling of s
 - **Automatic sandbox selection**: Chooses native OS sandboxing when available, Docker as fallback
 - **Native sandbox (preferred)**: Lightweight, fast startup, direct Keychain access on macOS. Exposes host filesystem read-only by default.
 - **Docker sandbox (fallback)**: Stronger filesystem isolation with container-only filesystem when native tools unavailable
-- **Host file access**: Your project files are accessible so Claude can read and edit them
+- **Host file access**: Your project files and Claude state paths are accessible so Claude can read and edit what it needs
 - **Git worktree support**: Automatically detects git worktrees and whitelists the main repo's `.git` directory so git operations work seamlessly
 - **Network access**: Full host network access for localhost development servers, MCP servers, and web requests
 - **Credential management**: Authentication is handled securely without exposing host credentials
@@ -415,6 +415,7 @@ cd cco
 ### Environment setup
 `cco` passes through everything you need:
 - `ANTHROPIC_API_KEY` - Direct access
+- `CLAUDE_CODE_OAUTH_TOKEN` - Externally managed Claude OAuth token; skips local credential checks and startup refresh
 - Terminal settings (`TERM`, `NO_COLOR`)
 - Git configuration
 - Locale and timezone
@@ -426,6 +427,7 @@ cd cco
 echo "DEBUG=1" > .env
 cco
 ```
+Blank lines, comments, whitespace-prefixed comments, and non-assignment lines in `.env` are ignored so shell-style formatting does not break startup.
 
 ## Requirements
 
@@ -443,7 +445,7 @@ cco
 - **Docker sandbox mode**:
   - **macOS**: Extracts from Keychain and mounts securely
   - **Linux**: Mounts `~/.claude/.credentials.json` or config directory
-- **Environment**: `ANTHROPIC_API_KEY` passed through in both modes
+- **Environment**: `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` passed through in both modes
 
 ## Architecture
 
@@ -458,7 +460,7 @@ Understanding the filesystem isolation differences between sandbox modes:
 | **Native + `--safe`** | Only project + whitelisted | **Strong** | Fast startup | Security + performance balance (experimental) |
 
 **Key Points:**
-- **Native sandbox (default)**: Exposes your entire host filesystem as read-only. Claude can read any file your user can read, but can only write to the project directory.
+- **Native sandbox (default)**: Exposes your entire host filesystem as read-only. Claude can read any file your user can read, but can only write to the project directory, Claude config/state paths, explicitly shared paths, and trusted git worktree metadata when needed.
 - **Docker sandbox**: Only shows explicitly mounted paths. Claude cannot see or read files outside mounted directories.
 - **`--safe` flag** (experimental): Available only with native sandboxing. Hides your `$HOME` directory entirely while keeping fast native performance. May cause some tools to fail if they require access to dotfiles or configuration in `$HOME`.
 
@@ -481,9 +483,9 @@ Understanding the filesystem isolation differences between sandbox modes:
 ### Safety features
 - **Filesystem isolation**: Level depends on sandbox mode
   - **Docker mode**: Only project and explicitly mounted paths visible
-  - **Native mode (default)**: Entire host filesystem visible read-only, project read/write
+  - **Native mode (default)**: Entire host filesystem visible read-only; project, Claude config/state paths, explicitly shared paths, and trusted git worktree metadata are read/write
   - **Native + `--safe`**: Only project and whitelisted paths visible (stronger isolation)
-- **Write protection**: All modes prevent writes outside project directory
+- **Write protection**: All modes prevent writes outside project, Claude state, and explicitly whitelisted paths
 - **Secure credential mounting**: Runtime-only credential access
 - **Fresh session isolation**: Clean environment for each session
 - **Terminal injection protection**: Linux sandbox blocks TIOCSTI/TIOCLINUX attacks via seccomp filtering
@@ -509,8 +511,8 @@ cco "review this pull request"
 ⚠️ **These features are experimental and may have edge cases. Use with caution.**
 
 ```bash
-# OAuth token refresh (EXPERIMENTAL)
-# Allows Claude to refresh expired tokens and sync back to host system
+# OAuth token sync-back (EXPERIMENTAL)
+# Lets sandboxed Claude sync refreshed credentials back to the host
 cco --allow-oauth-refresh "help me code"
 
 # Credential management (EXPERIMENTAL)  
@@ -520,7 +522,7 @@ cco restore-creds                   # Restore from most recent backup
 cco restore-creds backup-file.json  # Restore from specific backup
 ```
 
-**OAuth refresh feature**: Enables bidirectional credential sync when Claude refreshes expired tokens. Uses race condition protection and creates automatic backups.
+**OAuth refresh feature**: `cco` automatically performs a fixed host-side refresh before startup when credentials expire soon and the selected backend cannot safely persist an in-sandbox refresh. The experimental `--allow-oauth-refresh` mode is different: it enables bidirectional credential sync when sandboxed Claude refreshes expired tokens. It uses race condition protection and creates automatic backups.
 
 **Credential management**: Provides manual backup/restore of Claude Code credentials with cross-platform support (macOS Keychain + Linux files).
 

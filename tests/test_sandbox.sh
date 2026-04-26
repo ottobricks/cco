@@ -130,22 +130,18 @@ else
 	fail "-w flag allows writes to specified file"
 fi
 
-#
-# Claude OAuth persistence path tests (issue #48)
-#
-
 echo ""
-echo "--- Claude OAuth Persistence Paths (issue #48) ---"
+echo "--- HOME Write Restrictions ---"
 
 CLAUDE_HOME="$HOME/.sandbox_claude_home_$$"
 mkdir -p "$CLAUDE_HOME/existing-dir"
 echo "original" >"$CLAUDE_HOME/existing-dir/existing.txt"
 
-echo "Test: Claude lock and temp paths under HOME are writable"
-if HOME="$CLAUDE_HOME" ./sandbox sh -c 'mkdir "$HOME/.claude.lock" && rmdir "$HOME/.claude.lock" && : >"$HOME/.claude.json.lock" && rm -f "$HOME/.claude.json.lock" && : >"$HOME/.claude.json.tmp.$$" && rm -f "$HOME/.claude.json.tmp.$$"' 2>/dev/null; then
-	pass "Claude lock and temp paths under HOME are writable"
+echo "Test: Arbitrary HOME sibling creation is blocked"
+if HOME="$CLAUDE_HOME" ./sandbox sh -c ': >"$HOME/.unexpected-home-write-$$"' 2>/dev/null; then
+	fail "Arbitrary HOME sibling creation is blocked"
 else
-	fail "Claude lock and temp paths under HOME are writable"
+	pass "Arbitrary HOME sibling creation is blocked"
 fi
 
 echo "Test: Existing HOME entries stay read-only"

@@ -727,6 +727,15 @@ oauth_token_needs_startup_refresh() {
 	((expires_at_ms <= now_ms + refresh_window_ms))
 }
 
+oauth_token_needs_preemptive_startup_refresh() {
+	local expires_at_ms="$1"
+	local now_ms refresh_window_ms
+	now_ms=$(($(date +%s) * 1000))
+	refresh_window_ms=$((12 * 60 * 60 * 1000))
+
+	((expires_at_ms <= now_ms + refresh_window_ms))
+}
+
 backend_can_persist_oauth_refresh() {
 	if command -v security &>/dev/null; then
 		if [[ "$SANDBOX_BACKEND" == "native" ]]; then
@@ -743,7 +752,7 @@ backend_can_persist_oauth_refresh() {
 	fi
 
 	if [[ "$SANDBOX_BACKEND" == "native" ]]; then
-		return 0
+		return 1
 	fi
 
 	if [[ "$SANDBOX_BACKEND" == "docker" && "$allow_oauth_refresh" == true ]]; then
@@ -929,43 +938,35 @@ ensure_refreshable_oauth_credentials() {
 		return 0
 	fi
 
-	if ! oauth_token_needs_startup_refresh "$expires_at_ms"; then
-		return 0
-	fi
-
 	if backend_can_persist_oauth_refresh; then
-		warn "Claude OAuth token is expired or near expiry, but this backend can persist a refresh"
+		if oauth_token_needs_startup_refresh "$expires_at_ms"; then
+			warn "Claude OAuth token is expired or near expiry, but this backend can persist a refresh"
+		fi
 		return 0
 	fi
 
-	warn "Claude OAuth token is expired or near expiry"
-	warn "This sandbox path cannot safely persist Claude's refresh back to the host credentials"
+	if ! oauth_token_needs_preemptive_startup_refresh "$expires_at_ms"; then
+		return 0
+	fi
 
-	if confirm_default_yes \
-		"cco thinks Claude's OAuth token needs a refresh, and this sandbox cannot save the refreshed credentials back to your host. Run a one-shot plain Claude refresh now before starting cco?" \
-		"--yes enabled; refreshing Claude OAuth credentials before starting cco"; then
-		if ! run_unsandboxed_claude_refresh; then
-			error "Claude refresh did not complete successfully"
-			error "Run plain \`$(get_claude_command)\` once outside the sandbox, then retry cco."
+	log "Claude OAuth token expires soon; refreshing once before sandbox startup"
+
+	if ! run_unsandboxed_claude_refresh; then
+		error "Claude refresh did not complete successfully"
+		error "Run plain \`$(get_claude_command)\` once outside the sandbox, then retry cco."
+		exit 1
+	fi
+
+	credentials_payload=$(get_claude_credentials_payload)
+	if [[ -n "$credentials_payload" ]] && expires_at_ms=$(extract_oauth_expiry_ms "$credentials_payload"); then
+		if oauth_token_needs_startup_refresh "$expires_at_ms"; then
+			error "Claude credentials still look expired after the refresh attempt"
+			error "Run plain \`$(get_claude_command)\` outside the sandbox, finish any login flow, then retry cco."
 			exit 1
 		fi
-
-		credentials_payload=$(get_claude_credentials_payload)
-		if [[ -n "$credentials_payload" ]] && expires_at_ms=$(extract_oauth_expiry_ms "$credentials_payload"); then
-			if oauth_token_needs_startup_refresh "$expires_at_ms"; then
-				error "Claude credentials still look expired after the refresh attempt"
-				error "Run plain \`$(get_claude_command)\` outside the sandbox, finish any login flow, then retry cco."
-				exit 1
-			fi
-		fi
-
-		log "Claude OAuth credentials refreshed"
-		return 0
 	fi
 
-	error "Claude credentials need an out-of-sandbox refresh before this cco session can start"
-	error "Run plain \`$(get_claude_command)\` once outside the sandbox, then retry cco."
-	exit 1
+	log "Claude OAuth credentials refreshed"
 }
 
 # Verify Claude Code authentication is available

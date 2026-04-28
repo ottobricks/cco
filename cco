@@ -676,6 +676,49 @@ find_claude_config_dir() {
 	echo "$primary_dir"
 }
 
+claude_settings_has_api_key_helper() {
+	local settings_file
+	settings_file="$(find_claude_config_dir)/settings.json"
+
+	if [[ ! -f "$settings_file" ]]; then
+		return 1
+	fi
+
+	if command -v python3 >/dev/null 2>&1; then
+		python3 - "$settings_file" <<'PY' 2>/dev/null
+import json
+import sys
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        settings = json.load(handle)
+except Exception:
+    sys.exit(1)
+
+api_key_helper = settings.get("apiKeyHelper")
+if isinstance(api_key_helper, str) and api_key_helper.strip():
+    sys.exit(0)
+
+sys.exit(1)
+PY
+		return
+	fi
+
+	if command -v jq >/dev/null 2>&1; then
+		jq -e '(.apiKeyHelper // "") | strings | length > 0' "$settings_file" >/dev/null 2>&1
+		return
+	fi
+
+	return 1
+}
+
+using_external_claude_auth() {
+	[[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ||
+		-n "${ANTHROPIC_API_KEY:-}" ||
+		-n "${ANTHROPIC_AUTH_TOKEN:-}" ]] ||
+		claude_settings_has_api_key_helper
+}
+
 get_claude_keychain_account() {
 	if [[ -n "${USER:-}" ]]; then
 		printf '%s\n' "$USER"
@@ -1108,8 +1151,8 @@ ensure_accessible_macos_keychain_credentials() {
 }
 
 ensure_refreshable_oauth_credentials() {
-	# Token from environment is managed externally; nothing to refresh
-	if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+	# Externally managed auth has no local OAuth credential to refresh.
+	if using_external_claude_auth; then
 		return 0
 	fi
 
@@ -1164,9 +1207,8 @@ ensure_refreshable_oauth_credentials() {
 verify_claude_authentication() {
 	log "Verifying Claude Code authentication..."
 
-	# If CLAUDE_CODE_OAUTH_TOKEN is set, Claude Code will use it directly
-	if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
-		log "Using CLAUDE_CODE_OAUTH_TOKEN from environment"
+	if using_external_claude_auth; then
+		log "Using externally managed Claude authentication"
 		return 0
 	fi
 
@@ -2158,6 +2200,7 @@ run_container() {
 		# Anthropic / Claude Code
 		"ANTHROPIC_API_KEY"
 		"ANTHROPIC_BASE_URL"
+		"ANTHROPIC_AUTH_TOKEN"
 		"CLAUDE_CODE_OAUTH_TOKEN"
 		"CLAUDE_CONFIG_DIR"
 		# OpenAI / Codex
@@ -3341,6 +3384,7 @@ if [[ $# -gt 0 ]]; then
 		echo "                        Trust external git common dirs for worktree support"
 		echo "  CCO_SANDBOX_ARGS_FILE Persistent sandbox args file (one arg per line)"
 		echo "  ANTHROPIC_API_KEY     Passed through automatically"
+		echo "  ANTHROPIC_AUTH_TOKEN  Passed through automatically"
 		echo "  CLAUDE_CODE_OAUTH_TOKEN  Passed through (skips credential file check)"
 		echo "  OPENAI_API_KEY        Passed through automatically"
 		echo "  GEMINI_API_KEY        Passed through automatically"

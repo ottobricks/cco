@@ -2,7 +2,7 @@
 # Regression tests for startup recovery preflights.
 # Covers OAuth refresh prompting, macOS-over-SSH keychain recovery,
 # and the global --yes flag.
-# shellcheck disable=SC1090,SC2030,SC2031,SC2034,SC2317
+# shellcheck disable=SC1090,SC2016,SC2030,SC2031,SC2034,SC2317
 
 set -euo pipefail
 
@@ -74,6 +74,7 @@ echo "Test: --help documents --yes"
 if output=$("$CCO_BIN" --help 2>&1); then
 	assert_contains "$output" "--yes, -y             Auto-accept startup recovery prompts" "--help shows --yes flag"
 	assert_contains "$output" "CLAUDE_CODE_OAUTH_TOKEN" "--help documents external Claude token"
+	assert_contains "$output" "ANTHROPIC_AUTH_TOKEN" "--help documents Anthropic auth token passthrough"
 else
 	echo "  output:"
 	printf '%s\n' "$output" | sed 's/^/    /'
@@ -97,6 +98,68 @@ if (
 	pass "Claude auth helpers prefer ~/.claude and hash custom config dirs"
 else
 	fail "Claude auth helpers prefer ~/.claude and hash custom config dirs"
+fi
+
+echo ""
+echo "Test: bjq reads simple paths and array indexes"
+if (
+	source "$FUNCTIONS_ONLY"
+	json_file="$TEST_ROOT/bjq.json"
+	printf '%s\n' '{"permissions":{"defaultMode":"auto"},"items":[{"name":"first"},{"name":"second"}],"count":42,"enabled":false,"empty":null,"object":{"x":1},"array":["x","y"]}' >"$json_file"
+	[[ "$(bjq "permissions.defaultMode" "$json_file")" == "auto" ]]
+	[[ "$(bjq ".items[1].name" "$json_file")" == "second" ]]
+	[[ "$(bjq "count" "$json_file")" == "42" ]]
+	[[ "$(bjq "enabled" "$json_file")" == "false" ]]
+	[[ "$(bjq "empty" "$json_file")" == "null" ]]
+	[[ "$(bjq "object" "$json_file")" == '{"x":1}' ]]
+	[[ "$(bjq "array" "$json_file")" == '["x","y"]' ]]
+	[[ "$(bjq_type "items" "$json_file")" == "array" ]]
+	[[ "$(printf '{"stdin":["a","b"]}' | bjq "stdin[1]")" == "b" ]]
+	! bjq "missing.key" "$json_file" >/dev/null 2>&1
+	! bjq "items[-1]" "$json_file" >/dev/null 2>&1
+	! bjq "items..name" "$json_file" >/dev/null 2>&1
+	bad_json_file="$TEST_ROOT/bjq-bad.json"
+	printf '{"broken":\n' >"$bad_json_file"
+	if bjq "broken" "$bad_json_file" >/dev/null 2>&1; then
+		false
+	else
+		[[ $? -eq 2 ]]
+	fi
+); then
+	pass "bjq reads simple paths and array indexes"
+else
+	fail "bjq reads simple paths and array indexes"
+fi
+
+echo ""
+echo "Test: bjq falls back to python3 when jq is absent"
+python_path=$(command -v python3 2>/dev/null || true)
+if [[ -z "$python_path" ]]; then
+	skip "python3 unavailable for bjq fallback"
+elif (
+	source "$FUNCTIONS_ONLY"
+	fallback_bin="$TEST_ROOT/bjq-python-bin"
+	mkdir -p "$fallback_bin"
+	ln -s "$python_path" "$fallback_bin/python3"
+	ln -s "$(command -v mktemp)" "$fallback_bin/mktemp"
+	ln -s "$(command -v cat)" "$fallback_bin/cat"
+	ln -s "$(command -v rm)" "$fallback_bin/rm"
+	json_file="$TEST_ROOT/bjq-python.json"
+	printf '%s\n' '{"items":[{"name":"first"},{"name":"second"}]}' >"$json_file"
+	PATH="$fallback_bin"
+	[[ "$(bjq "items[1].name" "$json_file")" == "second" ]]
+	[[ "$(bjq_type "items[0]" "$json_file")" == "object" ]]
+	bad_json_file="$TEST_ROOT/bjq-python-bad.json"
+	printf '{"broken":\n' >"$bad_json_file"
+	if bjq "broken" "$bad_json_file" >/dev/null 2>&1; then
+		false
+	else
+		[[ $? -eq 2 ]]
+	fi
+); then
+	pass "bjq falls back to python3 when jq is absent"
+else
+	fail "bjq falls back to python3 when jq is absent"
 fi
 
 echo ""
@@ -272,6 +335,33 @@ else
 fi
 
 echo ""
+echo "Test: additionalDirectories is silent when key is absent"
+if output=$(
+	TEST_ROOT="$TEST_ROOT" FUNCTIONS_ONLY="$FUNCTIONS_ONLY" bash <<'EOF' 2>&1
+set -euo pipefail
+source "$FUNCTIONS_ONLY"
+project_dir="$TEST_ROOT/no-additional-directories-project"
+mkdir -p "$project_dir/.claude"
+printf '{"permissions":{"defaultMode":"auto"}}\n' >"$project_dir/.claude/settings.local.json"
+cd "$project_dir"
+additional_dirs=()
+load_additional_directories_from_settings
+EOF
+); then
+	if [[ "$output" == *"Skipping additionalDirectories"* ]]; then
+		echo "  output:"
+		printf '%s\n' "$output" | sed 's/^/    /'
+		fail "missing additionalDirectories key produces no warning"
+	else
+		pass "missing additionalDirectories key produces no warning"
+	fi
+else
+	echo "  output:"
+	printf '%s\n' "$output" | sed 's/^/    /'
+	fail "missing additionalDirectories key does not fail"
+fi
+
+echo ""
 echo "Test: OAuth preflight repairs expired credentials before startup"
 if (
 	PATH="$FAKE_BIN:$PATH"
@@ -437,6 +527,107 @@ else
 fi
 
 echo ""
+echo "Test: OAuth preflight skips refresh when ANTHROPIC_API_KEY is set"
+if (
+	PATH="$FAKE_BIN:$PATH"
+	source "$FUNCTIONS_ONLY"
+	export ANTHROPIC_API_KEY="test-api-key"
+	payload_reads=0
+	get_claude_credentials_payload() {
+		payload_reads=$((payload_reads + 1))
+		return 0
+	}
+	ensure_refreshable_oauth_credentials
+	[[ "$payload_reads" -eq 0 ]]
+); then
+	pass "OAuth preflight skips refresh when Anthropic API key is provided"
+else
+	fail "OAuth preflight skips refresh when Anthropic API key is provided"
+fi
+
+echo ""
+echo "Test: OAuth preflight skips refresh when settings env has ANTHROPIC_AUTH_TOKEN"
+if (
+	PATH="$FAKE_BIN:$PATH"
+	source "$FUNCTIONS_ONLY"
+	project_dir="$TEST_ROOT/settings-env-auth-project"
+	mkdir -p "$project_dir/.claude"
+	printf '{"env":{"ANTHROPIC_AUTH_TOKEN":"test-auth-token"}}\n' >"$project_dir/.claude/settings.local.json"
+	cd "$project_dir"
+	payload_reads=0
+	get_claude_credentials_payload() {
+		payload_reads=$((payload_reads + 1))
+		return 0
+	}
+	ensure_refreshable_oauth_credentials
+	[[ "$payload_reads" -eq 0 ]]
+); then
+	pass "OAuth preflight skips refresh when settings env has Anthropic auth token"
+else
+	fail "OAuth preflight skips refresh when settings env has Anthropic auth token"
+fi
+
+echo ""
+echo "Test: OAuth preflight does not use managed settings in Docker backend"
+if (
+	PATH="$FAKE_BIN:$PATH"
+	source "$FUNCTIONS_ONLY"
+	unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
+	export HOME="$TEST_ROOT/docker-managed-home"
+	unset CLAUDE_CONFIG_DIR
+	project_dir="$TEST_ROOT/docker-managed-project"
+	mkdir -p "$project_dir/.claude" "$HOME/.claude"
+	cd "$project_dir"
+	SANDBOX_BACKEND="docker"
+	managed_settings="$TEST_ROOT/docker-managed-settings.json"
+	printf '{"env":{"ANTHROPIC_API_KEY":"managed-api-key"}}\n' >"$managed_settings"
+	claude_managed_settings_path() {
+		printf '%s\n' "$managed_settings"
+	}
+	counter_file="$TEST_ROOT/docker-managed-payload-reads"
+	get_claude_credentials_payload() {
+		printf 'read\n' >>"$counter_file"
+		return 0
+	}
+	ensure_refreshable_oauth_credentials
+	[[ "$(wc -l <"$counter_file")" -eq 1 ]]
+); then
+	pass "Docker backend ignores host managed settings for auth preflight"
+else
+	fail "Docker backend ignores host managed settings for auth preflight"
+fi
+
+echo ""
+echo "Test: OAuth preflight honors higher-priority blank settings auth override"
+if (
+	PATH="$FAKE_BIN:$PATH"
+	source "$FUNCTIONS_ONLY"
+	unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
+	export HOME="$TEST_ROOT/blank-auth-override-home"
+	unset CLAUDE_CONFIG_DIR
+	mkdir -p "$HOME/.claude"
+	claude_managed_settings_path() {
+		printf '%s\n' "$TEST_ROOT/no-managed-settings.json"
+	}
+	printf '{"env":{"ANTHROPIC_API_KEY":"user-api-key"}}\n' >"$HOME/.claude/settings.json"
+	project_dir="$TEST_ROOT/blank-auth-override-project"
+	mkdir -p "$project_dir/.claude"
+	printf '{"env":{"ANTHROPIC_API_KEY":"   "}}\n' >"$project_dir/.claude/settings.local.json"
+	cd "$project_dir"
+	counter_file="$TEST_ROOT/blank-auth-override-payload-reads"
+	get_claude_credentials_payload() {
+		printf 'read\n' >>"$counter_file"
+		return 0
+	}
+	ensure_refreshable_oauth_credentials
+	[[ "$(wc -l <"$counter_file")" -eq 1 ]]
+); then
+	pass "higher-priority blank settings auth overrides lower-priority value"
+else
+	fail "higher-priority blank settings auth overrides lower-priority value"
+fi
+
+echo ""
 echo "Test: OAuth expiry extraction prefers claudeAiOauth over mcpOAuth entries"
 if (
 	PATH="$FAKE_BIN:$PATH"
@@ -509,6 +700,162 @@ if (
 	pass "auth file checks are skipped when external token is provided"
 else
 	fail "auth file checks are skipped when external token is provided"
+fi
+
+echo ""
+echo "Test: auth file checks are skipped when ANTHROPIC_API_KEY is set"
+if (
+	PATH="$FAKE_BIN:$PATH"
+	source "$FUNCTIONS_ONLY"
+	export ANTHROPIC_API_KEY="test-api-key"
+	export HOME="$TEST_ROOT/external-api-key-home"
+	unset CLAUDE_CONFIG_DIR
+	keychain_attempts=0
+	find_claude_config_dir() {
+		printf '%s\n' "$TEST_ROOT/missing-api-key-claude-config"
+	}
+	capture_macos_keychain_credentials() {
+		keychain_attempts=$((keychain_attempts + 1))
+		return 1
+	}
+	verify_claude_authentication
+	[[ "$keychain_attempts" -eq 0 ]]
+); then
+	pass "auth file checks are skipped when Anthropic API key is provided"
+else
+	fail "auth file checks are skipped when Anthropic API key is provided"
+fi
+
+echo ""
+echo "Test: auth file checks are skipped when .env provides ANTHROPIC_API_KEY"
+if (
+	PATH="$FAKE_BIN:$PATH"
+	source "$FUNCTIONS_ONLY"
+	unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
+	export HOME="$TEST_ROOT/dotenv-api-key-home"
+	unset CLAUDE_CONFIG_DIR
+	project_dir="$TEST_ROOT/dotenv-api-key-project"
+	mkdir -p "$project_dir"
+	printf 'ANTHROPIC_API_KEY=dotenv-api-key\n' >"$project_dir/.env"
+	cd "$project_dir"
+	custom_env_vars=()
+	claude_managed_settings_path() {
+		printf '%s\n' "$TEST_ROOT/no-managed-settings.json"
+	}
+	keychain_attempts=0
+	capture_macos_keychain_credentials() {
+		keychain_attempts=$((keychain_attempts + 1))
+		return 1
+	}
+	apply_preflight_environment
+	verify_claude_authentication
+	[[ "$keychain_attempts" -eq 0 ]]
+); then
+	pass "auth file checks are skipped when .env provides Anthropic API key"
+else
+	fail "auth file checks are skipped when .env provides Anthropic API key"
+fi
+
+echo ""
+echo "Test: auth file checks are skipped when --env provides ANTHROPIC_API_KEY"
+if (
+	PATH="$FAKE_BIN:$PATH"
+	source "$FUNCTIONS_ONLY"
+	unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
+	export HOME="$TEST_ROOT/custom-env-api-key-home"
+	unset CLAUDE_CONFIG_DIR
+	project_dir="$TEST_ROOT/custom-env-api-key-project"
+	mkdir -p "$project_dir"
+	cd "$project_dir"
+	custom_env_vars=("ANTHROPIC_API_KEY=custom-env-api-key")
+	claude_managed_settings_path() {
+		printf '%s\n' "$TEST_ROOT/no-managed-settings.json"
+	}
+	keychain_attempts=0
+	capture_macos_keychain_credentials() {
+		keychain_attempts=$((keychain_attempts + 1))
+		return 1
+	}
+	apply_preflight_environment
+	verify_claude_authentication
+	[[ "$keychain_attempts" -eq 0 ]]
+); then
+	pass "auth file checks are skipped when --env provides Anthropic API key"
+else
+	fail "auth file checks are skipped when --env provides Anthropic API key"
+fi
+
+echo ""
+echo "Test: auth file checks are skipped when project settings env has ANTHROPIC_API_KEY"
+if (
+	PATH="$FAKE_BIN:$PATH"
+	source "$FUNCTIONS_ONLY"
+	export HOME="$TEST_ROOT/settings-env-api-key-home"
+	unset CLAUDE_CONFIG_DIR
+	project_dir="$TEST_ROOT/settings-env-api-key-project"
+	mkdir -p "$project_dir/.claude"
+	printf '{"env":{"ANTHROPIC_API_KEY":"test-api-key"}}\n' >"$project_dir/.claude/settings.json"
+	cd "$project_dir"
+	keychain_attempts=0
+	capture_macos_keychain_credentials() {
+		keychain_attempts=$((keychain_attempts + 1))
+		return 1
+	}
+	verify_claude_authentication
+	[[ "$keychain_attempts" -eq 0 ]]
+); then
+	pass "auth file checks are skipped when project settings env has Anthropic API key"
+else
+	fail "auth file checks are skipped when project settings env has Anthropic API key"
+fi
+
+echo ""
+echo "Test: auth file checks are skipped when settings.json has apiKeyHelper"
+if (
+	PATH="$FAKE_BIN:$PATH"
+	source "$FUNCTIONS_ONLY"
+	export HOME="$TEST_ROOT/api-key-helper-home"
+	claude_dir="$TEST_ROOT/api-key-helper-claude-config"
+	mkdir -p "$claude_dir"
+	printf '{"apiKeyHelper":"op read op://claude/api-key"}\n' >"$claude_dir/settings.json"
+	find_claude_config_dir() {
+		printf '%s\n' "$claude_dir"
+	}
+	keychain_attempts=0
+	capture_macos_keychain_credentials() {
+		keychain_attempts=$((keychain_attempts + 1))
+		return 1
+	}
+	verify_claude_authentication
+	[[ "$keychain_attempts" -eq 0 ]]
+); then
+	pass "auth file checks are skipped when apiKeyHelper is configured"
+else
+	fail "auth file checks are skipped when apiKeyHelper is configured"
+fi
+
+echo ""
+echo "Test: auth file checks are skipped when project settings has apiKeyHelper"
+if (
+	PATH="$FAKE_BIN:$PATH"
+	source "$FUNCTIONS_ONLY"
+	export HOME="$TEST_ROOT/project-api-key-helper-home"
+	unset CLAUDE_CONFIG_DIR
+	project_dir="$TEST_ROOT/project-api-key-helper"
+	mkdir -p "$project_dir/.claude"
+	printf '{"apiKeyHelper":"op read op://claude/api-key"}\n' >"$project_dir/.claude/settings.json"
+	cd "$project_dir"
+	keychain_attempts=0
+	capture_macos_keychain_credentials() {
+		keychain_attempts=$((keychain_attempts + 1))
+		return 1
+	}
+	verify_claude_authentication
+	[[ "$keychain_attempts" -eq 0 ]]
+); then
+	pass "auth file checks are skipped when project apiKeyHelper is configured"
+else
+	fail "auth file checks are skipped when project apiKeyHelper is configured"
 fi
 
 echo ""

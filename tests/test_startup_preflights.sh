@@ -101,6 +101,54 @@ else
 fi
 
 echo ""
+echo "Test: bjq reads simple paths and array indexes"
+if (
+	source "$FUNCTIONS_ONLY"
+	json_file="$TEST_ROOT/bjq.json"
+	printf '%s\n' '{"permissions":{"defaultMode":"auto"},"items":[{"name":"first"},{"name":"second"}],"count":42,"enabled":false,"empty":null,"object":{"x":1},"array":["x","y"]}' >"$json_file"
+	[[ "$(bjq "permissions.defaultMode" "$json_file")" == "auto" ]]
+	[[ "$(bjq ".items[1].name" "$json_file")" == "second" ]]
+	[[ "$(bjq "count" "$json_file")" == "42" ]]
+	[[ "$(bjq "enabled" "$json_file")" == "false" ]]
+	[[ "$(bjq "empty" "$json_file")" == "null" ]]
+	[[ "$(bjq "object" "$json_file")" == '{"x":1}' ]]
+	[[ "$(bjq "array" "$json_file")" == '["x","y"]' ]]
+	[[ "$(bjq_type "items" "$json_file")" == "array" ]]
+	[[ "$(printf '{"stdin":["a","b"]}' | bjq "stdin[1]")" == "b" ]]
+	! bjq "missing.key" "$json_file" >/dev/null 2>&1
+	! bjq "items[-1]" "$json_file" >/dev/null 2>&1
+	! bjq "items..name" "$json_file" >/dev/null 2>&1
+); then
+	pass "bjq reads simple paths and array indexes"
+else
+	fail "bjq reads simple paths and array indexes"
+fi
+
+echo ""
+echo "Test: bjq falls back to python3 when jq is absent"
+python_path=$(command -v python3 2>/dev/null || true)
+if [[ -z "$python_path" ]]; then
+	skip "python3 unavailable for bjq fallback"
+elif (
+	source "$FUNCTIONS_ONLY"
+	fallback_bin="$TEST_ROOT/bjq-python-bin"
+	mkdir -p "$fallback_bin"
+	ln -s "$python_path" "$fallback_bin/python3"
+	ln -s "$(command -v mktemp)" "$fallback_bin/mktemp"
+	ln -s "$(command -v cat)" "$fallback_bin/cat"
+	ln -s "$(command -v rm)" "$fallback_bin/rm"
+	json_file="$TEST_ROOT/bjq-python.json"
+	printf '%s\n' '{"items":[{"name":"first"},{"name":"second"}]}' >"$json_file"
+	PATH="$fallback_bin"
+	[[ "$(bjq "items[1].name" "$json_file")" == "second" ]]
+	[[ "$(bjq_type "items[0]" "$json_file")" == "object" ]]
+); then
+	pass "bjq falls back to python3 when jq is absent"
+else
+	fail "bjq falls back to python3 when jq is absent"
+fi
+
+echo ""
 echo "Test: login keychain paths are trimmed before reuse"
 if (
 	source "$FUNCTIONS_ONLY"

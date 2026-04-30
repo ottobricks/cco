@@ -344,6 +344,17 @@ bjq() {
 	fi
 
 	if command -v jq >/dev/null 2>&1; then
+		if [[ -z "$json_file" ]]; then
+			temp_json_file=$(mktemp)
+			cat >"$temp_json_file"
+			json_file="$temp_json_file"
+		fi
+
+		if ! jq . "$json_file" >/dev/null 2>&1; then
+			[[ -n "$temp_json_file" ]] && rm -f "$temp_json_file"
+			return 2
+		fi
+
 		local jq_program
 		if [[ "$output_mode" == "type" ]]; then
 			# shellcheck disable=SC2016
@@ -386,6 +397,7 @@ bjq() {
 			jq -er --argjson path "$path_json" "$jq_program"
 		fi
 		local status=$?
+		[[ -n "$temp_json_file" ]] && rm -f "$temp_json_file"
 		[[ $status -eq 4 ]] && return 1
 		return "$status"
 	fi
@@ -756,7 +768,7 @@ load_additional_directories_from_settings() {
 	else
 		parse_status=$?
 		if [[ $parse_status -eq 127 ]]; then
-			warn "jq/python3 not found; skipping additionalDirectories from $settings_file"
+			warn "python3/jq not found; skipping additionalDirectories from $settings_file"
 		elif [[ $parse_status -ne 1 ]]; then
 			warn "Skipping additionalDirectories from $settings_file: Unable to parse settings.local.json"
 		fi

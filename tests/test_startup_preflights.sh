@@ -505,6 +505,28 @@ else
 fi
 
 echo ""
+echo "Test: OAuth preflight skips refresh when settings env has ANTHROPIC_AUTH_TOKEN"
+if (
+	PATH="$FAKE_BIN:$PATH"
+	source "$FUNCTIONS_ONLY"
+	project_dir="$TEST_ROOT/settings-env-auth-project"
+	mkdir -p "$project_dir/.claude"
+	printf '{"env":{"ANTHROPIC_AUTH_TOKEN":"test-auth-token"}}\n' >"$project_dir/.claude/settings.local.json"
+	cd "$project_dir"
+	payload_reads=0
+	get_claude_credentials_payload() {
+		payload_reads=$((payload_reads + 1))
+		return 0
+	}
+	ensure_refreshable_oauth_credentials
+	[[ "$payload_reads" -eq 0 ]]
+); then
+	pass "OAuth preflight skips refresh when settings env has Anthropic auth token"
+else
+	fail "OAuth preflight skips refresh when settings env has Anthropic auth token"
+fi
+
+echo ""
 echo "Test: OAuth expiry extraction prefers claudeAiOauth over mcpOAuth entries"
 if (
 	PATH="$FAKE_BIN:$PATH"
@@ -604,6 +626,30 @@ else
 fi
 
 echo ""
+echo "Test: auth file checks are skipped when project settings env has ANTHROPIC_API_KEY"
+if (
+	PATH="$FAKE_BIN:$PATH"
+	source "$FUNCTIONS_ONLY"
+	export HOME="$TEST_ROOT/settings-env-api-key-home"
+	unset CLAUDE_CONFIG_DIR
+	project_dir="$TEST_ROOT/settings-env-api-key-project"
+	mkdir -p "$project_dir/.claude"
+	printf '{"env":{"ANTHROPIC_API_KEY":"test-api-key"}}\n' >"$project_dir/.claude/settings.json"
+	cd "$project_dir"
+	keychain_attempts=0
+	capture_macos_keychain_credentials() {
+		keychain_attempts=$((keychain_attempts + 1))
+		return 1
+	}
+	verify_claude_authentication
+	[[ "$keychain_attempts" -eq 0 ]]
+); then
+	pass "auth file checks are skipped when project settings env has Anthropic API key"
+else
+	fail "auth file checks are skipped when project settings env has Anthropic API key"
+fi
+
+echo ""
 echo "Test: auth file checks are skipped when settings.json has apiKeyHelper"
 if (
 	PATH="$FAKE_BIN:$PATH"
@@ -626,6 +672,30 @@ if (
 	pass "auth file checks are skipped when apiKeyHelper is configured"
 else
 	fail "auth file checks are skipped when apiKeyHelper is configured"
+fi
+
+echo ""
+echo "Test: auth file checks are skipped when project settings has apiKeyHelper"
+if (
+	PATH="$FAKE_BIN:$PATH"
+	source "$FUNCTIONS_ONLY"
+	export HOME="$TEST_ROOT/project-api-key-helper-home"
+	unset CLAUDE_CONFIG_DIR
+	project_dir="$TEST_ROOT/project-api-key-helper"
+	mkdir -p "$project_dir/.claude"
+	printf '{"apiKeyHelper":"op read op://claude/api-key"}\n' >"$project_dir/.claude/settings.json"
+	cd "$project_dir"
+	keychain_attempts=0
+	capture_macos_keychain_credentials() {
+		keychain_attempts=$((keychain_attempts + 1))
+		return 1
+	}
+	verify_claude_authentication
+	[[ "$keychain_attempts" -eq 0 ]]
+); then
+	pass "auth file checks are skipped when project apiKeyHelper is configured"
+else
+	fail "auth file checks are skipped when project apiKeyHelper is configured"
 fi
 
 echo ""

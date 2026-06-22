@@ -69,7 +69,7 @@ is_valid_persist_name() {
 
 is_known_subcommand() {
 	case "$1" in
-	shell | codex | droid | opencode | pi | gemini | self-update | cleanup | info | backup-creds | restore-creds | pull | rebuild)
+	shell | auto | codex | droid | opencode | pi | gemini | self-update | cleanup | info | backup-creds | restore-creds | pull | rebuild)
 		return 0
 		;;
 	*)
@@ -549,6 +549,11 @@ build_claude_permission_args() {
 	claude_permission_args=()
 
 	if claude_args_include_permission_mode; then
+		return
+	fi
+
+	if [[ "${auto_mode:-}" == true ]]; then
+		claude_permission_args=("--permission-mode" "auto")
 		return
 	fi
 
@@ -2273,6 +2278,7 @@ run_container() {
 		fi
 		add_mount_arg "$codex_shim_dir" "$codex_shim_dir" "ro"
 		docker_args+=(-e "CCO_PREPEND_PATH=$codex_shim_dir")
+		docker_args+=(-e "CCO_CODEX_AUTO_MODE=$auto_mode")
 		persistent_exec_path="$codex_shim_dir:$persistent_exec_path"
 		log "Enabled codex-mode PATH shim for nested codex invocations"
 	fi
@@ -3069,6 +3075,7 @@ enable_git_worktree_common_dir=true
 claude_command_flag=""
 command_flag=""
 codex_mode=false
+auto_mode=false
 
 if [[ "${CCO_ALLOW_EXTERNAL_GIT_DIR:-}" == "1" ]]; then
 	allow_external_git_dir=true
@@ -3300,7 +3307,7 @@ while [[ $# -gt 0 ]]; do
 			while [[ $# -gt 0 ]] && [[ ! "$1" =~ ^- ]]; do
 				# Stop if we hit a known subcommand
 				case "$1" in
-				shell | codex | droid | opencode | pi | gemini | self-update | cleanup | info | backup-creds | restore-creds | pull | rebuild)
+				shell | auto | codex | droid | opencode | pi | gemini | self-update | cleanup | info | backup-creds | restore-creds | pull | rebuild)
 					# This is a subcommand, not a directory
 					break
 					;;
@@ -3346,6 +3353,26 @@ if [[ $# -gt 0 ]]; then
 		shift
 		# All remaining arguments are shell command arguments
 		claude_args=("$@")
+		;;
+	auto)
+		# Auto mode: run the named agent in its CLI's "ask me when needed" mode instead of a full permission bypass.
+		auto_mode=true
+		shift # consume "auto"
+		case "${1:-claude}" in
+		claude)
+			[[ $# -gt 0 ]] && shift # drop the explicit "claude" agent name when present
+			claude_args=("$@")
+			;;
+		codex | droid | opencode | pi | gemini)
+			configure_agent_subcommand "$1"
+			shift
+			claude_args=("$@")
+			;;
+		*)
+			# No explicit/recognized agent: treat the rest as Claude args.
+			claude_args=("$@")
+			;;
+		esac
 		;;
 	codex)
 		# OpenAI Codex mode - set up the command and add default directory
@@ -3456,6 +3483,7 @@ if [[ $# -gt 0 ]]; then
 		echo "  opencode [args...]  Run OpenCode in sandbox"
 		echo "  pi [args...]        Run Pi coding agent in sandbox"
 		echo "  gemini [args...]    Run Google Gemini CLI in sandbox"
+		echo "  auto <agent> [args] Run an agent in auto mode (asks when needed, not full bypass)"
 		echo "  cleanup             Remove all cco containers"
 		echo "  info                Show system info and readiness"
 		echo "  pull                Pull latest pre-built image"

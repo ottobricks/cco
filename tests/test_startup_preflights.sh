@@ -335,6 +335,59 @@ else
 fi
 
 echo ""
+echo "Test: cco auto mode requests Claude --permission-mode auto"
+if (
+	source "$FUNCTIONS_ONLY"
+	auto_mode=true
+	claude_args=()
+	claude_permission_args=(stale)
+	build_claude_permission_args
+	[[ ${#claude_permission_args[@]} -eq 2 ]]
+	[[ "${claude_permission_args[0]}" == "--permission-mode" ]]
+	[[ "${claude_permission_args[1]}" == "auto" ]]
+); then
+	pass "cco auto mode requests Claude --permission-mode auto"
+else
+	fail "cco auto mode requests Claude --permission-mode auto"
+fi
+
+echo ""
+echo "Test: cco auto mode gives Codex --ask-for-approval on-request"
+if (
+	source "$FUNCTIONS_ONLY"
+	auto_mode=true
+	codex_mode=true
+	command_flag="codex"
+	SANDBOX_BACKEND="native"
+	claude_args=("hi")
+	apply_codex_arg_policies
+	[[ "${claude_args[0]}" == "--ask-for-approval" ]]
+	[[ "${claude_args[1]}" == "on-request" ]]
+	! printf '%s\n' "${claude_args[@]}" | grep -qx -- "--dangerously-bypass-approvals-and-sandbox"
+); then
+	pass "cco auto mode gives Codex --ask-for-approval on-request"
+else
+	fail "cco auto mode gives Codex --ask-for-approval on-request"
+fi
+
+echo ""
+echo "Test: Codex without auto mode keeps the bypass flag"
+if (
+	source "$FUNCTIONS_ONLY"
+	auto_mode=false
+	codex_mode=true
+	command_flag="codex"
+	SANDBOX_BACKEND="native"
+	claude_args=("hi")
+	apply_codex_arg_policies
+	[[ "${claude_args[0]}" == "--dangerously-bypass-approvals-and-sandbox" ]]
+); then
+	pass "Codex without auto mode keeps the bypass flag"
+else
+	fail "Codex without auto mode keeps the bypass flag"
+fi
+
+echo ""
 echo "Test: additionalDirectories is silent when key is absent"
 if output=$(
 	TEST_ROOT="$TEST_ROOT" FUNCTIONS_ONLY="$FUNCTIONS_ONLY" bash <<'EOF' 2>&1

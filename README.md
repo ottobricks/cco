@@ -383,10 +383,10 @@ Security note: `--dangerously-bypass-approvals-and-sandbox` applies to Codex’s
 `cco auto <agent>` runs an agent in its native "ask me when it matters" mode instead of the default full-bypass mode:
 
 - `cco auto claude` runs Claude with `--permission-mode auto` instead of `--dangerously-skip-permissions`.
-- `cco auto codex` runs Codex with `--ask-for-approval on-request` instead of `--dangerously-bypass-approvals-and-sandbox`.
+- `cco auto codex` runs Codex with `--ask-for-approval on-request` instead of `--dangerously-bypass-approvals-and-sandbox`; because it no longer uses the bypass flag, Codex's own sandbox may also apply.
 - For all other agents (`gemini`, `droid`, `opencode`, `pi`) it behaves exactly like running the agent normally.
 
-In every case `cco`'s sandbox still applies; auto mode only changes the agent's own permission posture.
+In every case `cco`'s sandbox still applies. For Claude, auto mode only changes Claude's permission posture; for Codex, replacing the bypass flag also lets Codex enforce its own sandbox unless your Codex configuration or arguments say otherwise.
 
 ```bash
 cco auto claude "refactor this module"

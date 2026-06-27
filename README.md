@@ -378,6 +378,21 @@ cco --add-dir ~/.codex --command "codex --dangerously-bypass-approvals-and-sandb
 
 Security note: `--dangerously-bypass-approvals-and-sandbox` applies to Codex’s internal permission checks, not to `cco`. The `cco` sandbox still constrains filesystem access to your project and explicitly mounted paths. Network access remains unrestricted by design.
 
+### Auto Mode (`cco auto <agent>`)
+
+`cco auto <agent>` runs an agent in its native "ask me when it matters" mode instead of the default full-bypass mode:
+
+- `cco auto claude` runs Claude with `--permission-mode auto` instead of `--dangerously-skip-permissions`.
+- `cco auto codex` runs Codex with `--ask-for-approval on-request` instead of `--dangerously-bypass-approvals-and-sandbox`.
+- For all other agents (`gemini`, `droid`, `opencode`, `pi`) it behaves exactly like running the agent normally.
+
+In every case `cco`'s sandbox still applies; auto mode only changes the agent's own permission posture.
+
+```bash
+cco auto claude "refactor this module"
+cco auto codex "build and run the tests"
+```
+
 ## MCP Server Support
 
 `cco` uses host-based networking so that MCP (Model Context Protocol) servers or other tools you may have running on localhost are accessible to `cco`.

@@ -73,5 +73,8 @@ apply_agent_arg_policies() {
   gemini)
     apply_gemini_arg_policies
     ;;
+  omp)
+    apply_omp_arg_policies
+    ;;
   esac
 }
